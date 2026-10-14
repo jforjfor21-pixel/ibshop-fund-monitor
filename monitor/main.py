@@ -191,11 +191,17 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
+    def status(ok, msg):
+        os.makedirs(DATA, exist_ok=True)
+        with open(os.path.join(DATA, "status.json"), "w", encoding="utf-8") as f:
+            json.dump({"ok": ok, "time_utc": dt.datetime.utcnow().isoformat(timespec="seconds"), "message": msg}, f, ensure_ascii=False, indent=1)
     try:
         if not a.dry_run and not (os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID")):
             print("هشدار: TELEGRAM_BOT_TOKEN یا TELEGRAM_CHAT_ID تنظیم نشده؛ گزارش فقط در پوشه out ساخته می‌شود.")
         tg, reps = run(dry=a.dry_run)
+        status(True, f"{len(reps)} گزارش" + (" (بدون ارسال: توکن تلگرام تنظیم نشده)" if tg.dry else " ارسال شد"))
         print(f"OK: {len(reps)} گزارش، {len(tg.sent) if tg.dry else 'ارسال شد'}")
-    except Exception:
+    except Exception as e:
         traceback.print_exc()
+        status(False, f"{type(e).__name__}: {e}"[:1500])
         sys.exit(1)

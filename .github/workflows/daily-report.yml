@@ -19,9 +19,9 @@ jobs:
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -29,6 +29,12 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get update -y && sudo apt-get install -y libraqm0 libfribidi0 libharfbuzz0b || true; fi
           python -m pip install -r requirements.txt
+
+      - name: بررسی دسترسی شبکه
+        run: |
+          mkdir -p data
+          { echo "fipiran: $(curl -s -m 25 -o /dev/null -w '%{http_code} %{time_total}s' https://www.fipiran.com/ || echo fail)";
+            echo "telegram: $(curl -s -m 25 -o /dev/null -w '%{http_code}' https://api.telegram.org/ || echo fail)"; } | tee data/network.txt
 
       - name: رصد بازار و ارسال گزارش تلگرام
         env:
@@ -48,7 +54,7 @@ jobs:
 
       - name: نگه‌داشتن تصاویر گزارش
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: report-${{ github.run_number }}
           path: out/
