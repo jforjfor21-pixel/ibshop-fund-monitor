@@ -1,0 +1,55 @@
+name: گزارش روزانه رصد بازار صندوق‌ها
+
+on:
+  schedule:
+    - cron: "30 6 * * *"   # هر روز ساعت ۱۰:۰۰ به وقت تهران (۰۶:۳۰ UTC)
+  workflow_dispatch: {}      # اجرای دستی از تب Actions
+
+permissions:
+  contents: write            # برای ذخیره پایگاه داده روزانه در پوشه data
+
+concurrency:
+  group: fund-monitor
+  cancel-in-progress: false
+
+jobs:
+  report:
+    # اگر فیپیران از سرورهای گیت‌هاب پاسخ نداد، یک self-hosted runner داخل ایران بسازید
+    # و در Settings › Variables متغیر RUNNER_LABEL را برابر برچسب آن قرار دهید.
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: نصب پیش‌نیازها
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get update -y && sudo apt-get install -y libraqm0 libfribidi0 libharfbuzz0b || true; fi
+          python -m pip install -r requirements.txt
+
+      - name: رصد بازار و ارسال گزارش تلگرام
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FIPIRAN_PROXY: ${{ secrets.FIPIRAN_PROXY }}
+        run: python -m monitor.main
+
+      - name: ذخیره پایگاه داده
+        if: always()
+        run: |
+          git config user.name "fund-monitor-bot"
+          git config user.email "fund-monitor-bot@users.noreply.github.com"
+          git add data
+          git diff --cached --quiet || git commit -m "data: $(date -u +%F)"
+          git push || true
+
+      - name: نگه‌داشتن تصاویر گزارش
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-${{ github.run_number }}
+          path: out/
+          retention-days: 14
