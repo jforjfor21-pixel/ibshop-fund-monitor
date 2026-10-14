@@ -6,43 +6,54 @@ on:
   workflow_dispatch: {}      # اجرای دستی از تب Actions
 
 permissions:
-  contents: write            # برای ذخیره پایگاه داده روزانه در پوشه data
+  contents: write
 
 concurrency:
   group: fund-monitor
   cancel-in-progress: false
 
 jobs:
-  report:
-    # اگر فیپیران از سرورهای گیت‌هاب پاسخ نداد، یک self-hosted runner داخل ایران بسازید
-    # و در Settings › Variables متغیر RUNNER_LABEL را برابر برچسب آن قرار دهید.
-    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
-    timeout-minutes: 30
+  # ۱) دریافت داده از فیپیران. فیپیران به آی‌پی خارج از ایران جواب نمی‌دهد، پس این مرحله باید روی
+  #    رانر داخل ایران اجرا شود: متغیر FETCH_RUNNER را برابر «self-hosted» (یا برچسب رانر) بگذارید.
+  fetch:
+    runs-on: ${{ vars.FETCH_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
+      - name: دریافت داده فیپیران
+        env:
+          FIPIRAN_PROXY: ${{ secrets.FIPIRAN_PROXY }}
+        run: |
+          python -m pip install --quiet requests
+          python -m monitor.main --stage fetch --raw raw.json.gz
+      - uses: actions/upload-artifact@v5
+        with:
+          name: fipiran-raw
+          path: raw.json.gz
+          retention-days: 7
 
+  # ۲) تحلیل، ساخت نمودارها و ارسال تلگرام روی سرور گیت‌هاب (تلگرام از آن‌جا در دسترس است)
+  report:
+    needs: fetch
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-
       - name: نصب پیش‌نیازها
         run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get update -y && sudo apt-get install -y libraqm0 libfribidi0 libharfbuzz0b || true; fi
+          sudo apt-get update -y && sudo apt-get install -y libraqm0 libfribidi0 libharfbuzz0b || true
           python -m pip install -r requirements.txt
-
-      - name: بررسی دسترسی شبکه
-        run: |
-          mkdir -p data
-          { echo "fipiran: $(curl -s -m 25 -o /dev/null -w '%{http_code} %{time_total}s' https://www.fipiran.com/ || echo fail)";
-            echo "telegram: $(curl -s -m 25 -o /dev/null -w '%{http_code}' https://api.telegram.org/ || echo fail)"; } | tee data/network.txt
-
-      - name: رصد بازار و ارسال گزارش تلگرام
+      - uses: actions/download-artifact@v5
+        with:
+          name: fipiran-raw
+      - name: تحلیل و ارسال گزارش تلگرام
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          FIPIRAN_PROXY: ${{ secrets.FIPIRAN_PROXY }}
-        run: python -m monitor.main
-
+        run: python -m monitor.main --stage report --raw raw.json.gz
       - name: ذخیره پایگاه داده
         if: always()
         run: |
@@ -51,11 +62,25 @@ jobs:
           git add data
           git diff --cached --quiet || git commit -m "data: $(date -u +%F)"
           git push || true
-
-      - name: نگه‌داشتن تصاویر گزارش
+      - uses: actions/upload-artifact@v5
         if: always()
-        uses: actions/upload-artifact@v5
         with:
           name: report-${{ github.run_number }}
           path: out/
           retention-days: 14
+
+  # ۳) اگر دریافت داده شکست خورد، در تلگرام خبر بده
+  alert:
+    needs: fetch
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: هشدار تلگرام
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          [ -z "$TELEGRAM_BOT_TOKEN" ] && exit 0
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=⚠️ موتور رصد بازار: امروز دریافت داده از فیپیران انجام نشد. رانر داخل ایران روشن و وصل است؟ (Settings › Actions › Runners)" > /dev/null

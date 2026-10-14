@@ -117,18 +117,59 @@ def overview(reports, day):
     return "\n".join(L)
 
 
-def run(dry=False, fixture=None):
+class Recorder:
+    """مرحله دریافت: پاسخ‌های فیپیران را (کوتاه‌شده به ۴۰۰ روز اخیر) ضبط می‌کند تا مرحله گزارش روی سرور دیگری اجرا شود."""
+    def __init__(self, cli):
+        self.cli, self.raw = cli, {"items": None, "details": {}}
+
+    def fund_list(self):
+        self.raw["items"] = self.cli.fund_list()
+        return self.raw["items"]
+
+    def fund_detail(self, reg, gid):
+        d = self.cli.fund_detail(reg, gid)
+        t = {k: (v[:400] if isinstance(v, list) else v) for k, v in d.items() if k != "info"}
+        t["portfolio"], t["possession"] = (d.get("portfolio") or [])[:400:30], (d.get("possession") or [])[:1]
+        t["info"] = {k: v for k, v in (d.get("info") or {}).items() if not isinstance(v, (list, dict))}
+        self.raw["details"][f"{reg}|{gid}"] = t
+        return t
+
+
+class RawClient:
+    """مرحله گزارش: خواندن داده ضبط‌شده در مرحله دریافت."""
+    def __init__(self, path):
+        with gzip.open(path, "rt", encoding="utf-8") as f:
+            self.raw = json.load(f)
+
+    def fund_list(self):
+        return self.raw["items"]
+
+    def fund_detail(self, reg, gid):
+        d = self.raw["details"].get(f"{reg}|{gid}")
+        if d is None:
+            raise FipiranError(f"no raw detail {reg}")
+        return d
+
+
+def run(dry=False, fixture=None, stage="all", raw_path=None):
     os.makedirs(OUT, exist_ok=True)
     tg = Telegram(dry=dry or None)
-    cli = fixture or Client()
+    if stage == "report":
+        cli = RawClient(raw_path)
+    else:
+        cli = fixture or Client()
+        if stage == "fetch":
+            cli = Recorder(cli)
     try:
         items = cli.fund_list()
     except FipiranError as e:
+        if stage == "fetch":
+            raise
         tg.text(f"⚠️ <b>موتور رصد بازار</b>\nدسترسی به فیپیران برقرار نشد ({esc(e)}). اگر این خطا تکرار شد، اجرای کار را روی رانر داخل ایران یا با FIPIRAN_PROXY تنظیم کنید.")
         raise
     rows, groups = A.build(items)
     day = max(str(r["date"])[:10] for r in rows.values())
-    if not fixture:
+    if not fixture and stage != "fetch":
         save_snapshot(items, day)
     prev = prev_snapshot(day)
     prev_rank = {}
@@ -155,11 +196,19 @@ def run(dry=False, fixture=None):
                 except FipiranError:
                     details[k] = {}
             ms.append(A.metrics(r, details[k]))
+        if stage == "fetch":
+            continue
         our = next(m for m in ms if m["key"] == A.key(our_row))
         rank = G.index(our_row) + 1
         axes, sc = A.score(ms)
         reports.append(dict(label=f["label"], g=g, our=our, ms=ms, rank=rank, of=len(G), prev_rank=prev_rank.get(our["key"]), score=sc,
                             ins=A.insights(our, ms, rank, len(G), prev_rank.get(our["key"]), GROUP_NAMES[g])))
+    if stage == "fetch":
+        p = raw_path or os.path.join(OUT, "raw.json.gz")
+        with gzip.open(p, "wt", encoding="utf-8") as f:
+            json.dump(cli.raw, f, ensure_ascii=False)
+        print("raw saved:", p, os.path.getsize(p) // 1024, "KB,", len(cli.raw["details"]), "funds")
+        return tg, []
     tg.text(overview(reports, day))
     for i, rep in enumerate(reports):
         colors, j = {}, 1
@@ -190,15 +239,20 @@ def run(dry=False, fixture=None):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--stage", choices=["all", "fetch", "report"], default="all",
+                    help="fetch: فقط دریافت از فیپیران (روی رانر داخل ایران) | report: تحلیل و ارسال از روی فایل raw")
+    ap.add_argument("--raw", default=os.path.join(OUT, "raw.json.gz"))
     a = ap.parse_args()
     def status(ok, msg):
         os.makedirs(DATA, exist_ok=True)
         with open(os.path.join(DATA, "status.json"), "w", encoding="utf-8") as f:
             json.dump({"ok": ok, "time_utc": dt.datetime.utcnow().isoformat(timespec="seconds"), "message": msg}, f, ensure_ascii=False, indent=1)
     try:
-        if not a.dry_run and not (os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID")):
+        if a.stage != "fetch" and not a.dry_run and not (os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID")):
             print("هشدار: TELEGRAM_BOT_TOKEN یا TELEGRAM_CHAT_ID تنظیم نشده؛ گزارش فقط در پوشه out ساخته می‌شود.")
-        tg, reps = run(dry=a.dry_run)
+        tg, reps = run(dry=a.dry_run, stage=a.stage, raw_path=a.raw)
+        if a.stage == "fetch":
+            sys.exit(0)
         status(True, f"{len(reps)} گزارش" + (" (بدون ارسال: توکن تلگرام تنظیم نشده)" if tg.dry else " ارسال شد"))
         print(f"OK: {len(reps)} گزارش، {len(tg.sent) if tg.dry else 'ارسال شد'}")
     except Exception as e:
