@@ -156,6 +156,8 @@ def run(dry=False, fixture=None, stage="all", raw_path=None):
     tg = Telegram(dry=dry or None)
     if stage == "report":
         cli = RawClient(raw_path)
+        if os.environ.get("MONITOR_SAMPLE"):
+            tg.text("🧪 <b>اجرای آزمایشی</b> با داده نمونه ۲۰ مهر ۱۴۰۵ (پایگاه داده تغییر نمی‌کند).")
     else:
         cli = fixture or Client()
         if stage == "fetch":
@@ -169,7 +171,7 @@ def run(dry=False, fixture=None, stage="all", raw_path=None):
         raise
     rows, groups = A.build(items)
     day = max(str(r["date"])[:10] for r in rows.values())
-    if not fixture and stage != "fetch":
+    if not fixture and stage != "fetch" and not os.environ.get("MONITOR_SAMPLE"):
         save_snapshot(items, day)
     prev = prev_snapshot(day)
     prev_rank = {}
@@ -230,7 +232,7 @@ def run(dry=False, fixture=None, stage="all", raw_path=None):
             lines += [f"{F(i, 0)}. <b>{esc(A.sym(r) or r['name'])}</b> — {F(r['fundSize'] / A.BT / 1000, 1)} هزار میلیارد | ۳ ماه {F(r.get('quarterlyEfficiency'))}٪ | ماه {F(r.get('monthlyEfficiency'))}٪"
                       for i, r in enumerate(L, 1)]
             tg.text("\n".join(lines))
-    if not fixture:
+    if not fixture and not os.environ.get("MONITOR_SAMPLE"):
         append_history(day, [m for rep in reports for m in rep["ms"]])
         export_dashboard(day, reports, groups)
     return tg, reports

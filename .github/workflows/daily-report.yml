@@ -3,7 +3,12 @@ name: گزارش روزانه رصد بازار صندوق‌ها
 on:
   schedule:
     - cron: "30 6 * * *"   # هر روز ساعت ۱۰:۰۰ به وقت تهران (۰۶:۳۰ UTC)
-  workflow_dispatch: {}      # اجرای دستی از تب Actions
+  workflow_dispatch:         # اجرای دستی از تب Actions
+    inputs:
+      sample:
+        description: "آزمایش با داده نمونه ۲۰ مهر (بدون فیپیران)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -16,7 +21,7 @@ jobs:
   # ۱) دریافت داده از فیپیران. فیپیران به آی‌پی خارج از ایران جواب نمی‌دهد، پس این مرحله باید روی
   #    رانر داخل ایران اجرا شود: متغیر FETCH_RUNNER را برابر «self-hosted» (یا برچسب رانر) بگذارید.
   fetch:
-    runs-on: ${{ vars.FETCH_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ inputs.sample && 'ubuntu-latest' || vars.FETCH_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
@@ -26,6 +31,12 @@ jobs:
         run: |
           python -m pip install --quiet requests
           python -m monitor.main --stage fetch --raw raw.json.gz
+        if: ${{ !inputs.sample }}
+      - name: داده نمونه (فقط در اجرای آزمایشی)
+        if: ${{ inputs.sample }}
+        run: |
+          python -m pip install --quiet requests Pillow
+          python -m tests.make_raw raw.json.gz
       - uses: actions/upload-artifact@v5
         with:
           name: fipiran-raw
@@ -53,6 +64,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MONITOR_SAMPLE: ${{ inputs.sample && '1' || '' }}
         run: python -m monitor.main --stage report --raw raw.json.gz
       - name: ذخیره پایگاه داده
         if: always()
